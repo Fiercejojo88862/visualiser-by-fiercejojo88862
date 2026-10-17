@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/visualiser.png" alt="Visualiser by Fiercejojo88862" width="220">
+</p>
+
 # Visualiser by Fiercejojo88862
 
 A song visualiser that reacts to whatever is playing on this machine and pulls
