@@ -1,0 +1,25 @@
+[Unit]
+Description=Visualiser by Fiercejojo88862 (song-synced clip visualiser)
+Documentation=file:/home/josephs/Music/Visualiser by Fiercejojo88862/README.md
+# Only meaningful inside a graphical session; not wanted at boot.
+After=graphical-session.target
+PartOf=graphical-session.target
+StartLimitIntervalSec=15
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=/home/josephs/Music/Visualiser by Fiercejojo88862
+ExecStart="/home/josephs/Music/Visualiser by Fiercejojo88862/bin/run-container.sh"
+# The container exits when the window closes, so the unit goes inactive on its own.
+# The unit is deliberately NOT WantedBy=default.target: it starts when the app is
+# opened and stops when the app is closed.
+TimeoutStartSec=180
+TimeoutStopSec=20
+Restart=no
+KillMode=mixed
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Visualiser by Fiercejojo88862</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="stage">
+    <!-- world = everything that shakes with the sub-bass -->
+    <div id="world">
+      <div id="backdrop"></div>
+      <canvas id="procedural"></canvas>
+      <div class="deck" id="deckA"><div class="inner"></div></div>
+      <div class="deck" id="deckB"><div class="inner"></div></div>
+      <canvas id="postfx"></canvas>
+    </div>
+
+    <div id="vignette"></div>
+    <div id="flash"></div>
+    <div id="lyric"><span id="lyric-text"></span></div>
+
+    <!-- metadata / transport HUD -->
+    <header id="hud">
+      <div id="vinyl" class="hidden">
+        <img id="vinyl-img" alt="">
+        <span class="vinyl-hole"></span>
+      </div>
+      <div id="hud-text">
+        <div id="track-title">waiting for a player…</div>
+        <div id="track-meta">
+          <span id="track-artist"></span>
+          <span class="sep">/</span>
+          <span id="mood-line">–</span>
+          <span class="sep">/</span>
+          <span id="bpm-wrap" title="live tempo">
+            <span id="bpm-ring"></span>
+            <span id="tempo-line">BPM –</span>
+          </span>
+        </div>
+
+        <div id="progress-wrap" class="hidden">
+          <div id="progress" role="slider" aria-label="seek">
+            <div id="progress-buffer"></div>
+            <div id="progress-fill"></div>
+            <div id="progress-knob"></div>
+            <div id="progress-hover"></div>
+          </div>
+          <div id="time-line">
+            <span id="time-elapsed">0:00</span>
+            <span id="time-remaining">-0:00</span>
+          </div>
+        </div>
+
+        <div id="transport" class="hidden">
+          <button data-act="prev" title="previous (MPRIS)">&#9664;&#9664;</button>
+          <button data-act="playpause" title="play / pause (MPRIS)">&#9199;</button>
+          <button data-act="next" title="next (MPRIS)">&#9654;&#9654;</button>
+          <span class="sep"></span>
+          <span id="clips-line" title="clips buffered / cut counter">0 clips</span>
+        </div>
+      </div>
+    </header>
+
+    <div id="badge" class="hidden">timeline</div>
+    <div id="toast" class="hidden"></div>
+    <div id="sources"></div>
+    <div id="attribution">Powered by KLIPY</div>
+
+    <button id="gear" title="Settings (S)">&#9881;</button>
+
+    <section id="panel" class="hidden">
+      <h2>Visualiser settings</h2>
+      <form class="grid" onsubmit="return false">
+        <label>KLIPY key <input type="password" data-key="klipy_key" placeholder="paste app key"></label>
+        <label>GIPHY key (fallback) <input type="password" data-key="giphy_key" placeholder="optional"></label>
+        <label>Provider
+          <select data-key="provider"><option value="klipy">klipy</option><option value="giphy">giphy</option></select>
+        </label>
+        <label>Content filter
+          <select data-key="content_filter">
+            <option value="off">off</option><option value="low">low</option>
+            <option value="medium">medium</option><option value="high">high</option>
+          </select>
+        </label>
+        <label>Media kind
+          <select data-key="clip_kind"><option value="gif">gif</option><option value="clip">clip</option><option value="meme">meme</option></select>
+        </label>
+        <label>Effect intensity <input type="range" min="0" max="2" step="0.05" data-key="effect_intensity"><output></output></label>
+        <label>Beats between cuts <input type="range" min="1" max="16" step="1" data-key="min_beats_between_cuts"><output></output></label>
+        <label>Audio/video offset (ms) <input type="range" min="-500" max="500" step="10" data-key="av_offset_ms"><output></output></label>
+        <label>Spectrum bands (restart) <input type="range" min="16" max="128" step="8" data-key="spectrum_bands"><output></output></label>
+        <label>Particles <input type="range" min="0" max="700" step="20" data-key="particle_count"><output></output></label>
+        <label>HUD auto-hide (s, 0 = never) <input type="range" min="0" max="60" step="1" data-key="hud_autohide_seconds"><output></output></label>
+        <label>Seek step (s) <input type="range" min="2" max="60" step="1" data-key="seek_step_seconds"><output></output></label>
+        <label>Local clip folder <input type="text" data-key="local_library" placeholder="/path/to/gifs"></label>
+        <label class="check"><input type="checkbox" data-key="radial_spectrum"> radial spectrum ring</label>
+        <label class="check"><input type="checkbox" data-key="bottom_spectrum"> bottom spectrum</label>
+        <label class="check"><input type="checkbox" data-key="bass_shake"> bass shake</label>
+        <label class="check"><input type="checkbox" data-key="particle_trails"> particle trails / motion blur</label>
+        <label class="check"><input type="checkbox" data-key="postfx_bloom"> bloom</label>
+        <label class="check"><input type="checkbox" data-key="postfx_chroma"> chromatic aberration</label>
+        <label class="check"><input type="checkbox" data-key="show_progress"> progress bar + transport</label>
+        <label class="check"><input type="checkbox" data-key="show_album_art"> album artwork</label>
+        <label class="check"><input type="checkbox" data-key="art_backdrop"> blurred art backdrop</label>
+        <label class="check"><input type="checkbox" data-key="palette_sync"> colour sync from artwork</label>
+        <label class="check"><input type="checkbox" data-key="show_bpm_ring"> metronome ring on BPM</label>
+        <label class="check"><input type="checkbox" data-key="show_overlay"> HUD</label>
+        <label class="check"><input type="checkbox" data-key="show_lyrics"> lyrics</label>
+        <label class="check"><input type="checkbox" data-key="fetch_enabled"> fetch from API</label>
+        <label class="check"><input type="checkbox" data-key="record_streams"> record stream for offline beat analysis</label>
+      </form>
+      <div id="status-box"></div>
+      <div class="hint">
+        S panel · H hide HUD · O overlay · N next clip · Space pause visuals ·
+        &larr; &rarr; seek · F11 fullscreen · Ctrl+R reload · Ctrl+Q quit
+      </div>
+    </section>
+  </div>
+
+  <script src="/qwebchannel.js"></script>
+  <script src="/render.js"></script>
+</body>
+</html>

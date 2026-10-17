@@ -1,0 +1,13 @@
+# Runtime state: settings, media cache, recordings, beat timelines, logs, probes
+state/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Editors / OS
+.DS_Store
+*.swp

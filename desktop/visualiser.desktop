@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Visualiser by Fiercejojo88862
+GenericName=Music Visualiser
+Comment=Beat-synced GIF and clip visualiser for whatever you are playing
+Exec=/home/josephs/.local/bin/visualiser start
+TryExec=/home/josephs/.local/bin/visualiser
+Icon=visualiser
+Terminal=false
+Categories=AudioVideo;Audio;Player;Graphics;
+Keywords=visualiser;visualizer;music;gif;clips;reactive;beats;
+StartupNotify=true
+StartupWMClass=visualiser

@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# Visualiser by Fiercejojo88862 - user-facing launcher.
+#
+#   visualiser            start (and focus the window if it is already up)
+#   visualiser start      same
+#   visualiser stop       stop the container/unit
+#   visualiser status     unit + container + engine status
+#   visualiser logs       tail the engine log
+#   visualiser selftest   check audio/MPRIS/lyrics/provider wiring
+#   visualiser settings   print the settings file path and contents
+#   visualiser set K V    persist a setting
+#   visualiser rebuild    rebuild the container image
+#   visualiser build      alias of rebuild
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)"
+APP_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+UNIT="visualiser-by-fiercejojo88862.service"
+CONTAINER="visualiser-by-fiercejojo88862"
+STATE_DIR="${VISUALISER_STATE_DIR:-$APP_DIR/state}"
+
+have_systemd() { systemctl --user show-environment >/dev/null 2>&1; }
+unit_exists() { systemctl --user list-unit-files "$UNIT" >/dev/null 2>&1 && \
+                systemctl --user cat "$UNIT" >/dev/null 2>&1; }
+
+focus_window() {
+  command -v hyprctl >/dev/null 2>&1 || return 0
+  local addr
+  addr="$(hyprctl clients -j 2>/dev/null \
+    | python3 -c 'import json,sys
+try: c=json.load(sys.stdin)
+except Exception: sys.exit(0)
+for w in c:
+    if w.get("class","").lower() in ("visualiser","visualiser-by-fiercejojo88862") \
+       or "visualiser" in w.get("title","").lower():
+        print(w["address"]); break' 2>/dev/null || true)"
+  [ -n "${addr:-}" ] && hyprctl dispatch focuswindow "address:$addr" >/dev/null 2>&1 || true
+}
+
+running() {
+  docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$CONTAINER"
+}
+
+cmd_start() {
+  if running; then
+    echo "already running"
+    focus_window
+    return 0
+  fi
+  if have_systemd && unit_exists; then
+    systemctl --user start "$UNIT"
+    for _ in $(seq 1 40); do
+      sleep 0.25
+      if running; then focus_window; return 0; fi
+      systemctl --user is-active --quiet "$UNIT" || break
+    done
+    echo "unit did not come up cleanly; recent logs:" >&2
+    systemctl --user --no-pager -n 20 status "$UNIT" >&2 || true
+    return 1
+  fi
+  echo "systemd unit unavailable - running in the foreground"
+  exec "$SCRIPT_DIR/run-container.sh" "$@"
+}
+
+cmd_stop() {
+  if have_systemd && unit_exists; then
+    systemctl --user stop "$UNIT" || true
+  fi
+  if running; then
+    docker stop -t 5 "$CONTAINER" >/dev/null 2>&1 || true
+  fi
+  echo "stopped"
+}
+
+cmd_status() {
+  echo "app dir   : $APP_DIR"
+  echo "state dir : $STATE_DIR"
+  echo "unit      : $(have_systemd && unit_exists && systemctl --user is-active "$UNIT" || echo unknown)"
+  if running; then
+    echo "container : running ($(docker inspect -f '{{.State.StartedAt}}' "$CONTAINER" 2>/dev/null))"
+    docker stats --no-stream --format '            cpu {{.CPUPerc}}  mem {{.MemUsage}}' "$CONTAINER" 2>/dev/null || true
+  else
+    echo "container : not running"
+  fi
+  local log="$STATE_DIR/logs/visualiser.log"
+  if [ -f "$log" ]; then
+    echo "--- last engine log lines ---"
+    tail -n 12 "$log"
+  fi
+}
+
+cmd_logs() { tail -f "$STATE_DIR/logs/visualiser.log"; }
+
+case "${1:-start}" in
+  start)      shift || true; cmd_start "$@" ;;
+  stop)       cmd_stop ;;
+  status)     cmd_status ;;
+  logs|log)   cmd_logs ;;
+  selftest)   exec docker run --rm -i \
+                --user "$(id -u):$(id -g)" \
+                -e "VISUALISER_APP_DIR=/app" \
+                -e "VISUALISER_STATE_DIR=/app/state" \
+                -v "$APP_DIR:/app" -w /app \
+                "${VISUALISER_IMAGE:-visualiser-by-fiercejojo88862:local}" \
+                python -m app --selftest ;;
+  settings)   echo "$STATE_DIR/settings.json"; cat "$STATE_DIR/settings.json" 2>/dev/null || echo "(none yet)" ;;
+  set)        shift; exec docker run --rm -i \
+                --user "$(id -u):$(id -g)" \
+                -e "VISUALISER_APP_DIR=/app" \
+                -e "VISUALISER_STATE_DIR=/app/state" \
+                -v "$APP_DIR:/app" -w /app \
+                "${VISUALISER_IMAGE:-visualiser-by-fiercejojo88862:local}" \
+                python -m app --set "$@" ;;
+  rebuild|build) exec docker build -f "$APP_DIR/docker/Dockerfile" \
+                -t "${VISUALISER_IMAGE:-visualiser-by-fiercejojo88862:local}" "$APP_DIR" ;;
+  install)    exec "$SCRIPT_DIR/install.sh" ;;
+  *)
+    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+esac
