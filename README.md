@@ -51,6 +51,35 @@ bin/visualiser set klipy_key YOUR_KEY     # https://partner.klipy.com
 
 Then the app appears on the Applications menu as **Visualiser by Fiercejojo88862**.
 
+## Adding your own GIFs
+
+No API key needed — point the app at a folder and every clip it can play comes from
+there:
+
+```bash
+bin/visualiser set local_library "$HOME/Music/Visualiser GIFs"
+bin/visualiser stop && bin/visualiser start     # the folder is mounted at startup
+```
+
+Then just drop files into that folder (subfolders are searched too). **New files are
+picked up while the app is running** — the selector rescans whenever it runs low on
+clips, so a GIF copied in shows up within a few seconds without a restart. Only a
+*path* change needs the restart above, because the folder is bind-mounted into the
+container when it starts.
+
+- Formats: `gif`, `webp`, `apng`, `mp4`, `webm`, `mkv`, `mov`, `png`, `jpg`, `jpeg`.
+  GIFs are transcoded to VP9/webm on first use; stills are shown as static clips.
+- Up to 16 files are taken per rescan, shuffled, with never-seen files first, so a
+  folder bigger than that still gets used across a session. Keep it to a few hundred
+  MB — imports are copied into the clip cache and LRU-evicted at `cache_cap_gb` (6 GB).
+- Files must be readable by the container (which runs as your uid, so normal home
+  folders are fine).
+- Change the folder any time in the panel (`S` → *local clip folder*); the path only
+  takes effect after a restart. `bin/visualiser set local_library ""` removes it.
+
+Local clips are mixed with provider results when a key is configured, so you can use
+both at once.
+
 ## What you see
 
 Five layers, bottom to top:
@@ -173,7 +202,7 @@ visuals sink into a slow, desaturated drift when you pause.
 | `seek_step_seconds` | `←`/`→` seek distance |
 | `seek_enabled` | allow the app to seek your player |
 | `lyrics_enabled`, `show_lyrics` | lyric syncing |
-| `local_library` | folder of local gifs/videos used alongside the API |
+| `local_library` | folder of local gifs/videos used alongside (or instead of) the API — new files are picked up live, a path change needs a restart |
 | `cache_cap_gb` | clip cache cap (LRU-evicted) |
 | `monitor_source` | override the PulseAudio monitor, empty = auto |
 | `prefer_player` | e.g. `firefox`, empty = auto (ignores `playerctld`) |
@@ -212,6 +241,7 @@ Renderer console output — including uncaught JS errors — is written to the l
 | --- | --- |
 | Window opens, nothing moves | `selftest` — if the monitor source is wrong, set `monitor_source` manually to `<sink>.monitor` |
 | "No media source yet" toast | set `klipy_key`, or set `local_library` to a folder of gifs |
+| "Local folder has no clips" toast | `local_library` is set but the folder is empty (or not mounted into the container) — drop gifs in, or check the path |
 | Cuts feel late/early | adjust `av_offset_ms` (Bluetooth adds 100–250 ms) |
 | No track info | the player must expose MPRIS; `playerctld` is ignored on purpose |
 | Album art missing | the cover is a local file — for Firefox, `~/.config/mozilla/firefox/firefox-mpris` is mounted read-only into the container; other players can be added with `VISUALISER_EXTRA_MOUNTS="/path:/path:ro"` |

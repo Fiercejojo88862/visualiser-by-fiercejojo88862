@@ -11,11 +11,12 @@ import logging
 import random
 import re
 import threading
+import time
 from collections import deque
 
 from . import lyrics as lyrics_mod
 from .fetch import ProviderPool
-from .media import MediaStore
+from .media import GIF_EXT, IMG_EXT, VID_EXT, MediaStore, digest
 
 log = logging.getLogger("selector")
 
@@ -78,6 +79,8 @@ class Selector:
         self._queries_used = 0
         self._clips_sent = 0
         self._last_pushed: list[dict] = []
+        self._local_scan_t = 0.0
+        self._scanning = False
         self._stop = threading.Event()
         self._workers: list[threading.Thread] = []
         self._random = random.Random()
@@ -150,7 +153,8 @@ class Selector:
             self._pending.add(query)
             self._queries_used += 1
             self._pending_queue.append((query, kind))
-        self.emit({"t": "status", "queries_used": self._queries_used})
+        self.emit({"t": "status", "queries_used": self._queries_used,
+                   "local_files": self.local_count()})
 
     # -- workers -----------------------------------------------------------
     def _work_loop(self) -> None:
@@ -240,6 +244,7 @@ class Selector:
 
     def request(self, count: int = 1) -> None:
         self._push_ready()
+        self._maybe_scan_local()
 
     def resend(self) -> None:
         """Re-send the clips the renderer was last handed.
@@ -253,6 +258,50 @@ class Selector:
         if items:
             self.emit({"t": "clips", "items": items})
 
+    # -- local folder ------------------------------------------------------
+    def _maybe_scan_local(self) -> None:
+        """Pick up files dropped into the local folder without restarting.
+
+        The folder is bind-mounted when the container starts, so a *path* change
+        needs a restart - but copying new gifs into a folder that is already
+        mounted used to require one too, because the library was only read when a
+        track was prepared. Now a low queue triggers a rescan (rate limited, and on
+        a worker thread because acquiring a new file runs ffmpeg).
+        """
+        folder = (self.cfg.get("local_library") or "").strip()
+        if not folder:
+            return
+        now = time.monotonic()
+        if now - self._local_scan_t < 20.0:
+            return
+        with self._lock:
+            if self._scanning or len(self._queue) > 2:
+                return
+            self._scanning = True
+        self._local_scan_t = now
+        threading.Thread(target=self._scan_local_worker, name="local-scan",
+                         daemon=True).start()
+
+    def _scan_local_worker(self) -> None:
+        try:
+            items = self._local_library_items()
+            with self._lock:
+                known = {i.get("url") for i in self._queue}
+                known.update(i.get("url") for i in self._last_pushed)
+                fresh = [i for i in items if i.get("url") not in known]
+                if fresh:
+                    self._queue.extend(fresh)
+            if fresh:
+                log.info("local library: %d new clip(s) queued", len(fresh))
+                self.emit({"t": "notice", "level": "info",
+                           "text": f"{len(fresh)} new clip(s) from local library"})
+                self._push_ready()
+        except Exception:
+            log.exception("local library rescan failed")
+        finally:
+            with self._lock:
+                self._scanning = False
+
     def _local_library_items(self) -> list[dict]:
         folder = (self.cfg.get("local_library") or "").strip()
         if not folder:
@@ -261,9 +310,14 @@ class Selector:
         root = Path(folder).expanduser()
         if not root.is_dir():
             return []
-        files = [p for p in root.rglob("*")
-                 if p.suffix.lower() in {".gif", ".webm", ".mp4", ".webp", ".png", ".jpg"}]
+        exts = GIF_EXT | VID_EXT | IMG_EXT
+        files = [p for p in root.rglob("*") if p.suffix.lower() in exts]
         self._random.shuffle(files)
+        # Normally only the first 16 are taken, so shuffle first and then let files
+        # that have never been imported jump the queue: a library bigger than 16
+        # otherwise re-serves the same lucky-but-cached handful forever.
+        files.sort(key=lambda p: self.store.local_path(
+            f"{digest(str(p))}{p.suffix.lower()}").exists())
         out = []
         for path in files[:16]:
             media = self.store.acquire(f"file://{path}", transcode_gif=True)
@@ -273,7 +327,29 @@ class Selector:
                             "query": "local"})
         return out
 
+    def local_count(self) -> int:
+        """Usable files in the local folder, or -1 if it is not visible in here.
+
+        Cheap on purpose (no acquisition, no transcode): the renderer uses it to
+        decide whether to nag about having no media source, and a folder can be
+        configured on the host but not mounted into the container.
+        """
+        folder = (self.cfg.get("local_library") or "").strip()
+        if not folder:
+            return 0
+        from pathlib import Path
+        root = Path(folder).expanduser()
+        if not root.is_dir():
+            return -1
+        exts = GIF_EXT | VID_EXT | IMG_EXT
+        try:
+            return sum(1 for p in root.rglob("*") if p.suffix.lower() in exts)
+        except Exception:
+            return 0
+
     def stats(self) -> dict:
+        local = self.local_count()          # filesystem I/O: keep it out of the lock
         with self._lock:
             return {"queued": len(self._queue), "sent": self._clips_sent,
-                    "queries_used": self._queries_used}
+                    "queries_used": self._queries_used,
+                    "local_files": local}

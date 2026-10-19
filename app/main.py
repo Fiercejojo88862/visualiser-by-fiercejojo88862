@@ -265,7 +265,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.screenshot or args.probe:
         from PyQt6.QtCore import QTimer
 
+        log.info("capture mode: probe=%s screenshot=%s after=%.1fs",
+                 bool(args.probe), args.screenshot or "-", args.after)
+
         def do_capture() -> None:
+            log.info("capture firing")
             if args.screenshot:
                 try:
                     shot = win.view.grab()

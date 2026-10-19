@@ -35,7 +35,7 @@
     beats: 0, cuts: 0, lastCutBeat: -99, panelOpen: false,
     buffer: [], history: [], activeDeck: 0, lastCut: -1e9, lastRequest: 0,
     flash: 0, hue: 190, hueTarget: 190, pulse: 0, transient: 0,
-    lyric: "", track: {}, providersReady: false,
+    lyric: "", track: {}, providersReady: false, localFiles: null,
     connected: false, demo: false, lastStatus: {}, fps: 0, frames: 0,
     art: null, artUrl: "", palette: [], accent: null,
     shakeX: 0, shakeY: 0, shakeScale: 1,
@@ -516,6 +516,9 @@
       }
       case "status_full": {
         state.lastStatus = msg;
+        const sel = msg.selector || {};
+        if (typeof sel.local_files === "number") state.localFiles = sel.local_files;
+        checkSourceHint();
         renderStatusBox();
         break;
       }
@@ -531,7 +534,14 @@
         break;
       }
       case "notice": toast(msg.text, msg.level); break;
-      case "status": state.lastStatus.selector = { queries_used: msg.queries_used }; break;
+      case "status": {
+        state.lastStatus.selector = { queries_used: msg.queries_used };
+        if (typeof msg.local_files === "number") {
+          state.localFiles = msg.local_files;
+          checkSourceHint();
+        }
+        break;
+      }
       case "diag": {
         const node = activeMediaNode();
         send({
@@ -560,6 +570,7 @@
             hud_idle: document.body.classList.contains("hud-idle"),
             pose: { x: Math.round(state.pos), dur: Math.round(state.duration) },
             providers_ready: state.providersReady,
+            local_files: state.localFiles,
             demo: state.demo,
           },
         });
@@ -747,9 +758,15 @@
 
   function checkSourceHint() {
     const hasKey = !!(state.settings.klipy_key || state.settings.giphy_key);
-    const hasLocal = !!(state.settings.local_library || "").trim();
-    state.providersReady = hasKey || hasLocal;
-    if (!state.providersReady && state.settings.fetch_enabled !== false) {
+    const folder = (state.settings.local_library || "").trim();
+    // null = the engine has not reported the folder contents yet: do not cry wolf
+    const files = state.localFiles;
+    const usableLocal = !!folder && (files === null || files === undefined || files > 0);
+    state.providersReady = hasKey || usableLocal;
+    if (state.providersReady || state.settings.fetch_enabled === false) return;
+    if (folder) {
+      toast("Local folder has no clips - drop gifs in, or add a KLIPY key", "warn");
+    } else {
       toast("No media source yet - press S and paste your KLIPY key", "warn");
     }
   }
