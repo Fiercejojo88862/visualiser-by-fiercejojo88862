@@ -40,7 +40,12 @@ Music/Visualiser by Fiercejojo88862/
 
 ## Quick start
 
+Needs Linux with Wayland or X11, Docker, python3, and PipeWire/PulseAudio plus an
+MPRIS-aware player for the audio-synced parts.
+
 ```bash
+git clone https://github.com/Fiercejojo88862/visualiser-by-fiercejojo88862.git \
+  "$HOME/Music/Visualiser by Fiercejojo88862"
 cd "$HOME/Music/Visualiser by Fiercejojo88862"
 bin/install.sh                      # launcher, desktop entry, icon, systemd unit
 bin/visualiser                      # start (builds the image on first run)
@@ -48,6 +53,11 @@ bin/visualiser                      # start (builds the image on first run)
 # recommended: give it a media source
 bin/visualiser set klipy_key YOUR_KEY     # https://partner.klipy.com
 ```
+
+The folder can live anywhere and be named anything — `install.sh` renders the
+systemd unit and desktop entry with the checkout's real path, so there are no
+hardcoded home directories. If you move the folder later, run `bin/install.sh`
+again (or just `bin/visualiser`, which repairs a stale unit automatically).
 
 Then the app appears on the Applications menu as **Visualiser by Fiercejojo88862**.
 
@@ -239,6 +249,7 @@ Renderer console output — including uncaught JS errors — is written to the l
 
 | Symptom | Fix |
 | --- | --- |
+| `Error: Directory not found` on start | the installed systemd unit points at another folder (usually the author's) — run `bin/install.sh`; `bin/visualiser start` now repairs this automatically |
 | Window opens, nothing moves | `selftest` — if the monitor source is wrong, set `monitor_source` manually to `<sink>.monitor` |
 | "No media source yet" toast | set `klipy_key`, or set `local_library` to a folder of gifs |
 | "Local folder has no clips" toast | `local_library` is set but the folder is empty (or not mounted into the container) — drop gifs in, or check the path |

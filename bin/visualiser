@@ -23,6 +23,24 @@ have_systemd() { systemctl --user show-environment >/dev/null 2>&1; }
 unit_exists() { systemctl --user list-unit-files "$UNIT" >/dev/null 2>&1 && \
                 systemctl --user cat "$UNIT" >/dev/null 2>&1; }
 
+# An install made by an older version of install.sh (or from a different folder)
+# points systemd at a path that no longer exists; starting it then fails with a
+# bare "Directory not found". Re-render the unit against this checkout instead.
+unit_stale() {
+  have_systemd && unit_exists || return 1
+  local wd
+  wd="$(systemctl --user show "$UNIT" -p WorkingDirectory --value 2>/dev/null || true)"
+  [ "$wd" = "$APP_DIR" ] && return 1
+  return 0
+}
+
+refresh_unit() {
+  if unit_stale; then
+    echo "systemd unit does not point at $APP_DIR - reinstalling it"
+    "$SCRIPT_DIR/install.sh" >/dev/null
+  fi
+}
+
 focus_window() {
   command -v hyprctl >/dev/null 2>&1 || return 0
   local addr
@@ -46,6 +64,17 @@ cmd_start() {
     echo "already running"
     focus_window
     return 0
+  fi
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "error: docker is not installed - this app runs in a container" >&2
+    return 1
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    echo "error: docker is installed but the daemon is not reachable" >&2
+    return 1
+  fi
+  if have_systemd && unit_exists && unit_stale; then
+    refresh_unit
   fi
   if have_systemd && unit_exists; then
     systemctl --user start "$UNIT"
