@@ -200,6 +200,8 @@ class Provider:
     def search_url(self, query: str, limit: int, kind: str) -> str:
         raise NotImplementedError
 
+    _last_fail: str = ""
+
     def search(self, query: str, limit: int = 20, kind: str = "gif") -> list[Candidate]:
         if not self.configured():
             self.last_error = "no API key configured"
@@ -245,7 +247,10 @@ class Provider:
             return []
         items = parse_candidates(payload, self.name, limit)
         if items:
+            self._last_fail = ""
             self._store(query, limit, kind, items)
+        else:
+            self._last_fail = f"{self.name}: {self.last_error or 'no results'}"
         return items
 
     # query cache: keyed on the *query*, so repeat moods/lyrics compound
@@ -351,13 +356,19 @@ class ProviderPool:
     def limiter(self) -> RateLimiter:
         return self.providers[0].limiter if self.providers else RateLimiter(0)
 
+    _last_fail: str = ""
+
     def search(self, query: str, limit: int = 20, kind: str = "gif") -> list[Candidate]:
+        fails = []
         for p in self.providers:
             if not p.configured():
                 continue
             items = p.search(query, limit, kind)
             if items:
+                self._last_fail = ""
                 return items
+            fails.append(f"{p.name}: {getattr(p, 'last_error', '') or 'no results'}")
+        self._last_fail = fails[0] if fails else ""
         return []
 
     def status(self) -> dict:

@@ -61,6 +61,8 @@ class Engine:
         self._last_pos = 0.0
         self._hello = False
         self._frames_sent = 0
+        self._last_prov_notice = 0.0
+        self._shown_fail = ""
         self._last_stats = 0.0
 
     # -- lifecycle ---------------------------------------------------------
@@ -378,6 +380,14 @@ class Engine:
             self.selector.mood_refresh(mood, terms)
             self._last_mood_push = now
 
+        if now - self._last_prov_notice > 20 and self.pool._last_fail:
+            self._last_prov_notice = now
+            fail = self.pool._last_fail
+            if fail != getattr(self, "_shown_fail", ""):
+                self._shown_fail = fail
+                self.emit({"t": "notice", "level": "warn",
+                           "text": f"{fail} - no clips fetched; check settings "
+                                   f"(S) or add a GIPHY key"})
         if now - self._last_stats > 20:
             self._last_stats = now
             self.store.enforce_cap()
