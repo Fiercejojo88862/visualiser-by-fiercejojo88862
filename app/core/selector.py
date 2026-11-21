@@ -113,10 +113,11 @@ class Selector:
         queries: list[tuple[str, str]] = []
         seeds: list[str] = []
 
-        if lyr and lyr.lines:
-            seeds = lyr.distinctive_queries(8)
-            for line in seeds:
-                queries.append((line, "gif"))
+        # Vibe comes from the audio mood (beat/BPM/energy -> _mood_terms), not
+        # the lyrics: lyric-derived search queries are skipped entirely.
+        vibe = [t for t in self._mood_terms if t]
+        if vibe:
+            queries.append((" ".join(vibe[:3]), "gif"))
         if track.title:
             queries.append((lyrics_mod.sanitize(track.title), "gif"))
         if track.artist:
