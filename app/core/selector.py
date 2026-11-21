@@ -207,7 +207,7 @@ class Selector:
                 if any(r in blob for r in list(self._recent)[:10]):
                     score -= 2.0
                 if blob[:60] in set(self._seen):
-                    score -= 3.0
+                    score -= 5.0
                 if any(p and (p in blob or p.split("/")[-1] in blob) for p in pins):
                     score += 5.0  # pinned clips outrank fresh matches
             c.score = score
@@ -221,6 +221,10 @@ class Selector:
                     return
             media = self.store.acquire(c.url, transcode_gif=True)
             if not media:
+                continue
+            # hard exclusion: skip anything already shown, unless nothing else is available
+            seen_alts = [o for o in best if o is not c and o.blob()[:60] not in set(self._seen)]
+            if c.blob()[:60] in set(self._seen) and seen_alts:
                 continue
             if state.is_blacklisted(media["url"]) or state.is_blacklisted(c.url):
                 continue
