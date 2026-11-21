@@ -76,6 +76,9 @@ class Selector:
         self._pending: set[str] = set()
         self._last_mood_terms: list[str] = []
         self._recent: deque[str] = deque(maxlen=24)
+        # _seen persists across tracks: hard anti-repeat so a meme doesn't
+        # show up on the next track/mood either.
+        self._seen: deque[str] = deque(maxlen=300)
         self._track_key = ""
         self._queries_used = 0
         self._clips_sent = 0
@@ -195,8 +198,10 @@ class Selector:
             if c.kind == "video":
                 score += 0.4
             with self._lock:
-                if any(r in blob for r in list(self._recent)[:6]):
-                    score -= 1.5
+                if any(r in blob for r in list(self._recent)[:10]):
+                    score -= 2.0
+                if blob[:60] in set(self._seen):
+                    score -= 3.0
                 if any(p and (p in blob or p.split("/")[-1] in blob) for p in pins):
                     score += 5.0  # pinned clips outrank fresh matches
             c.score = score
@@ -223,6 +228,7 @@ class Selector:
                 else:
                     self._queue.append(item)
                 self._recent.append(c.blob()[:60])
+                self._seen.append(c.blob()[:60])
                 self._clips_sent += 1
             self._push_ready()
 
