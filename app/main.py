@@ -76,14 +76,15 @@ def run_selftest(cfg: dict) -> int:
     report["analysis"] = {"frame_rate": round(RATE / HOP, 2), "hop": HOP}
 
     # regression suite: beats math (synthetic click tracks) + selector curation
-    try:
+    import importlib.util
+    if importlib.util.find_spec("pytest") is None:
+        report["pytest"] = {"ok": None, "skipped": "pytest not installed"}
+    else:
         import subprocess
         r = subprocess.run([sys.executable, "-m", "pytest", "tests/", "-q"],
                            capture_output=True, text=True, timeout=240, check=False)
         report["pytest"] = {"ok": r.returncode == 0,
                             "output": (r.stdout + r.stderr).strip().splitlines()[-8:]}
-    except Exception as exc:
-        report["pytest"] = {"ok": False, "error": str(exc)}
 
     print(json.dumps(report, indent=2))
     ok = report["tools"]["parec"] and report["tools"]["ffmpeg"] and report["paths"]["web_exists"]
