@@ -168,7 +168,12 @@ class MprisWatcher(threading.Thread):
                 if chosen:
                     name, status, track, pos = chosen
                     self.available = True
-                    changed = track.key != self.track.key
+                    # key is title|artist|duration; compare title + player too so a
+                    # metadata change with equal key (or 0-length streams) still fires.
+                    changed = (track.key != self.track.key
+                               or track.title != self.track.title
+                               or track.player != self.track.player
+                               or track.album != self.track.album)
                     with self._lock:
                         prev_status = self.status
                         self.status, self.player = status, name
