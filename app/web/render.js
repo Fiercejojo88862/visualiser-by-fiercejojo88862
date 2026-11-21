@@ -24,6 +24,12 @@
     calm: 165, dreamy: 265, gritty: 12,
   };
 
+  // Mood -> canvas composite mode (Custom Shader / Blending Modes per Mood).
+  const MOOD_OPS = {
+    gritty: "multiply", dreamy: "lighter", euphoric: "screen",
+    energetic: "screen", frenetic: "screen", melancholic: "darken", calm: "lighter",
+  };
+
   const state = {
     settings: {},
     target: { sub: 0, bass: 0, lowmid: 0, mid: 0, high: 0, air: 0, rms: 0 },
@@ -42,6 +48,7 @@
     scrub: null, dragging: false, lastActivity: performance.now(),
     hudHover: false, postfxOn: true, lowFpsSince: 0, paused: 0, speed: 1,
     postfxFrames: 0, chromaFrames: 0,
+    dropT: 0, chorus: 0, pinnedSet: new Set(),
   };
 
   const pulseRings = [];
@@ -272,9 +279,11 @@
       return;
     }
     try {
-      fxc.globalCompositeOperation = "source-over";
+      fxc.globalCompositeOperation = state.settings.composite_mode !== false
+        ? (MOOD_OPS[state.mood] || "source-over") : "source-over";
       fxc.clearRect(0, 0, fx.width, fx.height);
       drawCover(fxc, node, fx.width, fx.height);
+      fxc.globalCompositeOperation = "source-over";
     } catch (e) {
       return;
     }
@@ -286,7 +295,7 @@
     state._postfxDirty = true;
     pctx.globalCompositeOperation = "lighter";
 
-    if (bloomWanted) {
+    if (bloomWanted && !gl) {
       blc.globalCompositeOperation = "source-over";
       blc.clearRect(0, 0, bl.width, bl.height);
       blc.filter = "blur(10px) brightness(1.4) saturate(1.3)";
@@ -318,9 +327,95 @@
 
     pctx.globalAlpha = 1;
     pctx.globalCompositeOperation = "source-over";
+  
+    drawWebGLBloom();
+}
+
+  
+  /* ---------- WebGL2 bloom pipeline ------------------------------------- */
+  let gl = null;
+  let glReady = false;
+  function initWebGL() {
+    try {
+      const cv = document.createElement("canvas");
+      cv.id = "glq";
+      gl = cv.getContext("webgl2");
+      if (!gl) return;
+      const vs = gl.createShader(gl.VERTEX_SHADER);
+      gl.shaderSource(vs, "attribute vec2 aPos; void main(){ gl_Position=vec4(aPos,0.0,1.0); }");
+      gl.compileShader(vs);
+      const fs = gl.createShader(gl.FRAGMENT_SHADER);
+      gl.shaderSource(fs, `#version 300 es
+precision mediump float;
+uniform sampler2D uTex;
+uniform float uRadius;
+out vec4 frag;
+void main() {
+  float s = 1.0 / max(1.0, uRadius);
+  vec2 c = gl_FragCoord.xy;
+  vec3 t = texture(uTex, c).rgb * 0.34;
+  t += (texture(uTex, c + vec2(s,0.0)).rgb + texture(uTex, c - vec2(s,0.0)).rgb) * 0.13;
+  t += (texture(uTex, c + vec2(0.0,s)).rgb + texture(uTex, c - vec2(0.0,s)).rgb) * 0.13;
+  t += (texture(uTex, c + vec2(s,s)).rgb + texture(uTex, c - vec2(s,s)).rgb) * 0.08;
+  t += (texture(uTex, c + vec2(-s,s)).rgb + texture(uTex, c - vec2(-s,s)).rgb) * 0.08;
+  frag = vec4(t, 1.0);
+}`);
+      gl.compileShader(fs);
+      const prog = gl.createProgram();
+      gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      const fbo = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      const buf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+      gl.__prog = prog; gl.__tex = tex; gl.__fbo = fbo;
+      gl.__radiusU = gl.getUniformLocation(prog, "uRadius");
+      gl.__texLoc = gl.getUniformLocation(prog, "uTex");
+      const img = new Image();
+      img.onload = () => { glReady = true; };
+      img.onerror = () => { glReady = false; };
+      img.src = postfx.toDataURL("image/png");
+    } catch (e) { gl = null; glReady = false; }
   }
 
-  /* ---------- decks ----------------------------------------------------- */
+  function bloomAlpha() {
+    return clamp(0.10 + state.smooth.rms * 0.3 + state.transient * 0.5, 0, 0.8)
+      * Number(state.settings.effect_intensity ?? 1);
+  }
+
+  function drawWebGLBloom() {
+    if (!glReady || !gl || !W || !H) return;
+    if (!(state.settings.postfx_bloom !== false && state.postfxOn)) return;
+    if (gl.drawingBufferWidth !== W || gl.drawingBufferHeight !== H) {
+      gl.canvas.width = W; gl.canvas.height = H; gl.viewport(0, 0, W, H);
+    }
+    const r = Math.max(4, Math.min(24, H * 0.02));
+    gl.uniform1i(gl.__texLoc, 0);
+    gl.uniform1f(gl.__radiusU, r);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, gl.__fbo);
+    const out = new Uint8ClampedArray(W * H * 4);
+    gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, out);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    pctx.globalAlpha = bloomAlpha();
+    pctx.globalCompositeOperation = "lighter";
+    pctx.putImageData(new ImageData(out, W, H), 0, 0);
+    pctx.globalCompositeOperation = "source-over";
+    pctx.globalAlpha = 1;
+    state.glBloomFrames = (state.glBloomFrames || 0) + 1;
+  }
+
+/* ---------- decks ----------------------------------------------------- */
   const decks = [
     { el: $("#deckA"), inner: $("#deckA .inner"), item: null, ready: false },
     { el: $("#deckB"), inner: $("#deckB .inner"), item: null, ready: false },
@@ -518,6 +613,7 @@
         state.lastStatus = msg;
         const sel = msg.selector || {};
         if (typeof sel.local_files === "number") state.localFiles = sel.local_files;
+        if (Array.isArray(msg.pinned)) state.pinnedSet = new Set(msg.pinned);
         checkSourceHint();
         renderStatusBox();
         break;
@@ -654,6 +750,7 @@
     state.pulse = 1.5;
     state.flash = Math.max(state.flash, 0.8);
     state.transient = 1;
+    state.dropT = 1;
     state.hueTarget = (resolveHue() + rng(80, 200)) % 360;
     performCut("drop", 1);
   }
@@ -917,6 +1014,10 @@
         case "h": case "H": toggleHud(); break;
         case "o": case "O": toggleOverlay(); break;
         case "n": case "N": preloadNext(); performCut("manual", 1); break;
+        case "x": case "X": case "Backspace": curDeckCmd("blacklist"); break;
+        case "f": case "F": curDeckCmd("pin"); break;
+        case "1": case "2": case "3": case "4": case "5":
+        case "6": case "7": case "8": case "9": applyPreset(Number(e.key) - 1); break;
         case "Escape": togglePanel(false); break;
         case "ArrowLeft": send({ cmd: "seek", delta: -(Number(state.settings.seek_step_seconds) || 15) }); break;
         case "ArrowRight": send({ cmd: "seek", delta: Number(state.settings.seek_step_seconds) || 15 }); break;
@@ -955,7 +1056,95 @@
 
   /* ---------- main loop ------------------------------------------------- */
   let last = performance.now();
-  function frame(now) {
+  
+  function warpSpeed() {
+    if (!state.settings.speed_warp) return;
+    const bpm = state.bpm > 0 ? state.bpm : 120;
+    const beatSec = Math.max(0.3, 60 / bpm);
+    const active = decks[state.activeDeck];
+    const node = active && active.el ? active.el.querySelector("video") : null;
+    let rate = 0;
+    if (node && node.duration > 0.5) {
+      rate = clamp(10 / (node.duration / beatSec), 0.55, 1.8);
+    }
+    if (rate) {
+      rate += clamp(state.smooth.bass, 0, 1) * 0.5;
+      rate += state.dropT * 0.9;
+      for (const d of decks) {
+        const n = d.el ? d.el.querySelector("video") : null;
+        if (n) n.playbackRate = clamp(rate, 0.5, 2.2);
+      }
+    }
+  }
+
+  function drawKaraoke() {
+    if (!state.settings.karaoke_mode || !state.lyric) return;
+    const s = 1 + Math.min(0.8, state.pulse * 1.2) + Math.min(0.5, state.transient);
+    const fontPx = Math.round(52 * s * (0.75 + Number(state.settings.effect_intensity ?? 1) * 0.3));
+    ctx.save();
+    ctx.translate(W / 2, H * 0.55);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = `bold ${fontPx}px sans-serif`;
+    ctx.shadowBlur = 30;
+    ctx.shadowColor = "#000";
+    ctx.fillStyle = `hsl(${state.hue.toFixed(0)}, 75%, 78%)`;
+    ctx.fillText(state.lyric, 0, 0);
+    ctx.restore();
+  }
+
+  function currentDeckUrl() {
+    const d = decks[state.activeDeck];
+    return d && d.item ? d.item.url : "";
+  }
+
+  function curDeckCmd(cmd) {
+    const url = currentDeckUrl();
+    if (!url) { toast("nothing on stage", "warn"); return; }
+    if (cmd === "blacklist") {
+      performCut("blacklist", 1);
+      send({ cmd: "blacklist", url });
+    } else {
+      send({ cmd: state.pinnedSet.has(url) ? "unpin" : "pin", url });
+    }
+  }
+
+  const PRESET_DEFS = [
+    { name: "Minimal Ambient", s: { composite_mode: true, postfx_chroma: false, radial_spectrum: false, bottom_spectrum: false, bass_shake: false, speed_warp: false } },
+    { name: "Club Strobe", s: { postfx_chroma: true, bass_shake: true, speed_warp: true } },
+    { name: "Pure Clip", s: { postfx_bloom: true, postfx_chroma: false, speed_warp: false } },
+    { name: "Oscilloscope", s: { radial_spectrum: false, bottom_spectrum: false, postfx_bloom: false, postfx_chroma: false, speed_warp: false, effect_intensity: 0.7 } },
+    { name: "Neon Dreams", s: { speed_warp: true } },
+    { name: "Euphoric Bloom", s: { effect_intensity: 1.6, particle_trails: true, speed_warp: true } },
+    { name: "Dreamy Stars", s: { speed_warp: false } },
+    { name: "Gritty", s: { composite_mode: true, effect_intensity: 1.2 } },
+    { name: "Frenetic Chaos", s: { particle_trails: true, speed_warp: true, effect_intensity: 1.8 } },
+  ];
+  function applyPreset(i) {
+    const p = PRESET_DEFS[i];
+    if (!p) return;
+    for (const k of Object.keys(p.s)) send({ cmd: "set", key: k, value: p.s[k] });
+    const el = $("#preset-label");
+    if (el) el.textContent = p.name;
+  }
+
+  function pollRemote() {
+    if (!state.connected) return;
+    fetch("/api/remote")
+      .then((r) => r.json())
+      .then((cmds) => { for (const c of cmds || []) applyRemote(c); })
+      .catch(() => {});
+  }
+  function applyRemote(c) {
+    if (!c || !c.cmd) return;
+    if (c.cmd === "skip") { preloadNext(); performCut("remote", 1); }
+    else if (c.cmd === "blacklist") { curDeckCmd("blacklist"); }
+    else if (c.cmd === "tweak" && c.effect_intensity != null) {
+      state.settings.effect_intensity = clamp(Number(c.effect_intensity), 0.1, 2.5);
+      send({ cmd: "set", key: "effect_intensity", value: state.settings.effect_intensity });
+    }
+  }
+function frame(now) {
     window.__rafN = (window.__rafN || 0) + 1;
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
@@ -978,8 +1167,9 @@
       } else state.lowFpsSince = 0;
     }
 
-    const intensity = Number(state.settings.effect_intensity ?? 1);
-    const pausedTarget = state.playing ? 0 : 1;
+    state.chorus = Math.max(0, state.chorus - dt * 0.5);
+    const chorusBoost = state.chorus > 0 ? clamp(1 + state.chorus * 0.35, 1, 1.7) : 1;
+    const intensity = Number(state.settings.effect_intensity ?? 1) * chorusBoost;const pausedTarget = state.playing ? 0 : 1;
     state.paused = lerp(state.paused, pausedTarget, clamp(dt * 1.6, 0, 1));
     state.speed = 1 - state.paused * 0.75;
 
@@ -1054,8 +1244,10 @@
         (blur > 0.05 ? ` blur(${blur.toFixed(2)}px)` : "");
     }
 
+    warpSpeed();
     drawProcedural(t);
     drawPostFX();
+    if (state.settings.karaoke_mode) drawKaraoke();
 
     // watchdog: never sit on a blank stage while we hold media to show
     if (!frame._watch || now - frame._watch > 1200) {
@@ -1065,6 +1257,27 @@
         if (cur.item && hasMedia(cur)) cur.el.classList.add("active");
         else performCut("heal", 0.6);
       }
+    }
+
+    // rotation watchdog: guarantee a fresh clip at least every
+    // `clip_cycle_seconds`, even when beat detection never locks (quiet
+    // passage, unsupported player, monitor drop-out) or the provider queue
+    // runs dry mid-song. Without this the last clip just loops until the
+    // track ends. Beats still cut faster when they fire; this is the ceiling.
+    const cycle = Number(state.settings.clip_cycle_seconds ?? 0);
+    if (cycle > 0 && state.playing && state.paused < 0.9
+        && now - state.lastCut >= cycle * 1000
+        && now - (state.lastRotate || 0) > 700) {
+      state.lastRotate = now;
+      if (!state.buffer.length && !decks[inactive()].item && state.history.length) {
+        // recycle what we have already seen rather than loop one clip forever
+        const shown = decks[state.activeDeck].item ? decks[state.activeDeck].item.url : "";
+        const reuse = state.history.filter((it) => it && it.url !== shown).slice(-6);
+        if (reuse.length) state.buffer.push(...reuse);
+      }
+      preloadNext();
+      performCut("cycle", 0.5);
+      requestClips(false);
     }
 
     // HUD auto-hide after inactivity (mouse hovering the HUD keeps it up)
@@ -1095,6 +1308,8 @@
   applySettingsToPanel();
   requestAnimationFrame(frame);
   connect();
+  setInterval(pollRemote, 2000);
+  initWebGL();
   setTimeout(() => requestClips(true), 800);
 
   setTimeout(() => {

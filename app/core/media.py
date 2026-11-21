@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -57,15 +58,76 @@ def _download(url: str, dest: Path, timeout: float = 25.0) -> bool:
         return False
 
 
-def transcode(src: Path, dst: Path, max_px: int = 1280) -> bool:
+def probe_size(path) -> tuple[int, int]:
+    """Intrinsic video dimensions, or (0, 0) if ffprobe cannot tell."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=20).stdout.strip()
+        w, h = out.split(",")[:2]
+        return int(w), int(h)
+    except Exception:
+        return 0, 0
+
+
+def detect_content_rect(src: Path, samples: int = 20) -> tuple[int, int, int, int] | None:
+    """Content rectangle (w, h, x, y) of a video, ignoring baked-in bars.
+
+    Provider memes are often padded into a square or 4:3 frame (a 640x480 file
+    holding 640x360 of picture, or a 498x230 file pillarboxed to 410x230). CSS
+    `object-fit: cover` cannot remove that: the bars are *inside* the file, so
+    the stage still shows them. The most common cropdetect rect across a handful
+    of frames is the real picture area; constant padding makes the mode reliable.
+
+    Returns None when the frame is already full-bleed, or when the detection is
+    suspicious (a dark scene can collapse to an 8x8 box - cropping to that would
+    destroy the clip, so anything under 45% of the frame is rejected).
+    """
+    if not shutil.which("ffmpeg"):
+        return None
+    try:
+        log_text = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-i", str(src),
+             "-vf", "cropdetect=limit=24:round=2:reset=0",
+             "-frames:v", str(max(1, samples)), "-f", "null", "-"],
+            capture_output=True, text=True, timeout=60).stderr or ""
+    except Exception:
+        return None
+    counts: dict[tuple[int, int, int, int], int] = {}
+    for m in re.finditer(r"crop=(\d+):(\d+):(\d+):(\d+)", log_text):
+        rect = tuple(int(v) for v in m.groups())
+        counts[rect] = counts.get(rect, 0) + 1
+    if not counts:
+        return None
+    rect = max(counts, key=counts.get)
+    fw, fh = probe_size(src)
+    if not fw or not fh:
+        return None
+    w, h, x, y = rect
+    area = (w * h) / float(fw * fh)
+    if area < 0.45 or area >= 0.97:
+        return None
+    w -= w % 2
+    h -= h % 2
+    x = max(0, min(x, fw - w))
+    y = max(0, min(y, fh - h))
+    if w < 16 or h < 16:
+        return None
+    return (w, h, x, y)
+
+
+def transcode(src: Path, dst: Path, max_px: int = 1280,
+              crop: tuple[int, int, int, int] | None = None) -> bool:
     """GIF -> looping VP9 webm. Much cheaper for Chromium to composite."""
     if not shutil.which("ffmpeg"):
         return False
     scale = (f"scale='if(gt(iw,ih),min({max_px},iw),-2)':'if(gt(iw,ih),-2,min({max_px},ih))'"
              f",fps=30")
+    filters = ([f"crop={crop[0]}:{crop[1]}:{crop[2]}:{crop[3]}"] if crop else []) + [scale]
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error", "-i", str(src),
-        "-vf", scale, "-an", "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "36",
+        "-vf", ",".join(filters), "-an", "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "36",
         "-deadline", "realtime", "-cpu-used", "6", "-row-mt", "1",
         "-pix_fmt", "yuv420p", "-loop", "0", str(dst),
     ]
@@ -125,17 +187,56 @@ class MediaStore:
                                             ("image" if ext in IMG_EXT else "gif"))
         return self._register(raw, key, kind, transcode_gif, source_url=f"file://{path}")
 
+    def _crop_for(self, raw: Path, key: str) -> tuple[int, int, int, int] | None:
+        """Memoised detect_content_rect, stored beside the clip.
+
+        The marker keeps repeated acquisitions cheap (ffmpeg decode + cropdetect
+        is not free) and survives as long as the cache entry does.
+        """
+        marker = self.local_path(f"{key}.crop")
+        if marker.exists():
+            try:
+                text = marker.read_text(errors="ignore").strip()
+                if text == "none":
+                    return None
+                w, h, x, y = (int(v) for v in text.split(":"))
+                return (w, h, x, y)
+            except Exception:
+                pass
+        rect = detect_content_rect(raw)
+        try:
+            marker.write_text("none" if rect is None else ":".join(str(v) for v in rect))
+        except Exception:
+            log.exception("could not write crop marker")
+        if rect:
+            log.info("baked-in bars removed: %s content=%dx%d+%d+%d",
+                     raw.name, rect[0], rect[1], rect[2], rect[3])
+        return rect
+
     def _register(self, raw: Path, key: str, kind: str, transcode_gif: bool,
                   source_url: str) -> dict:
         play = raw
+        crop = self._crop_for(raw, key) if kind in ("gif", "video") else None
+
         if transcode_gif and kind == "gif":
-            webm = self.local_path(f"{key}.webm")
+            # cropped output gets its own name so an older, uncropped transcode
+            # from a previous version of the app cannot mask the fix
+            webm = self.local_path(f"{key}.fit.webm" if crop else f"{key}.webm")
             if not webm.exists() or webm.stat().st_size < 2048:
-                if not transcode(raw, webm):
+                if not transcode(raw, webm, crop=crop):
                     webm.unlink(missing_ok=True)
             if webm.exists():
                 play = webm
                 kind = "video"
+        elif kind == "video" and crop:
+            # A provider mp4/webm with letterboxing baked into the frame: crop it
+            # once and play the cropped copy, so the stage is genuinely filled.
+            fit = self.local_path(f"{key}.fit.webm")
+            if not fit.exists() or fit.stat().st_size < 2048:
+                if not transcode(raw, fit, crop=crop):
+                    fit.unlink(missing_ok=True)
+            if fit.exists():
+                play = fit
         os.utime(play, None)
         return {
             "file": str(play),

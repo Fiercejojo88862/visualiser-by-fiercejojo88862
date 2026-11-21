@@ -120,9 +120,43 @@ cmd_status() {
 
 cmd_logs() { tail -f "$STATE_DIR/logs/visualiser.log"; }
 
+# visualiser prune
+#   Clear orphaned recordings, expired query cache, and dead clip cache files.
+#   Never touches pinned timelines, settings, or in-flight streams.
+cmd_prune() {
+  docker run --rm -u root --entrypoint python -v "$APP_DIR:/app" -v "$STATE_DIR:/app/state" \
+    "${VISUALISER_IMAGE:-visualiser-by-fiercejo88862:local}" - <<'PY'
+import time, sys
+from pathlib import Path
+from app import config
+cfg = config.load()
+now = time.time()
+days = cfg.get("query_cache_days", 30)
+removed = 0
+for d, prefix in ((config.QUERY_CACHE, "query"), (config.CLIP_CACHE, "clip"),
+                  (config.LYRIC_CACHE, "lyric"), (config.ART_CACHE, "art")):
+    if not d.is_dir():
+        continue
+    for f in d.iterdir():
+        if not f.is_file():
+            continue
+        age_days = (now - f.stat().st_mtime) / 86400
+        if prefix == "clip" and (age_days > 30 or (age_days > 14 and f.suffix != ".webm")):
+            pass  # clips: only truly stale ones; webm are re-acquireable
+        elif age_days > days:
+            f.unlink(missing_ok=True); removed += 1
+for f in (config.REC_CACHE).glob("*.wav"):
+    age_days = (now - f.stat().st_mtime) / 86400
+    if age_days > 30 and not (config.TIMELINE_CACHE / f"{f.stem}.json").exists():
+        f.unlink(missing_ok=True); removed += 1
+print(f"pruned: {removed} file(s); pinned timelines/settings preserved")
+PY
+}
+
 case "${1:-start}" in
   start)      shift || true; cmd_start "$@" ;;
   stop)       cmd_stop ;;
+  prune)      cmd_prune ;;
   status)     cmd_status ;;
   logs|log)   cmd_logs ;;
   selftest)   exec docker run --rm -i \

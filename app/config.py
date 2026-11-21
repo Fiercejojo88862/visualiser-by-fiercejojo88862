@@ -38,6 +38,10 @@ DEFAULTS: dict = {
     "flash_on_beat": True,
     "min_beats_between_cuts": 2,
     "cut_on_drop": True,
+    # Guaranteed clip rotation: never sit on one clip longer than this, even
+    # when beat detection never locks or the provider queue runs dry.
+    # 0 disables it and leaves cuts purely beat-driven.
+    "clip_cycle_seconds": 3.0,
     # ---- spectrum / reactive layers --------------------------------------
     "spectrum_bands": 64,
     "radial_spectrum": True,
@@ -61,6 +65,14 @@ DEFAULTS: dict = {
     # ---- sync ------------------------------------------------------------
     "av_offset_ms": 0,
     "position_snap_ms": 900,
+    "av_offset_profiles": {},      # {pactl sink name: ms}: per-device latency
+
+    # ---- curation & engine behaviour -------------------------------------
+    "speed_warp": True,            # renderer: playbackRate warp on beat/drop
+    "composite_mode": True,        # mood -> canvas composite mode (duotone LUT)
+    "karaoke_mode": False,         # renderer: kinetic typography of active lyric
+    "presets": {},                 # {name: {settings...}} scene presets (render.js)
+    "section_boost": True,         # chorus: stronger cuts/effects/particles
     # ---- music source ----------------------------------------------------
     "prefer_player": "",           # e.g. "firefox" - empty means auto
     "ignore_players": ["playerctld"],

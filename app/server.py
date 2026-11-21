@@ -3,6 +3,7 @@ media (with byte-range support so Chromium can seek/loop video)."""
 
 from __future__ import annotations
 
+import json
 import logging
 import mimetypes
 import os
@@ -24,6 +25,61 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):  # keep the log clean
         log.debug("%s - %s", self.address_string(), fmt % args)
+
+    # -- web remote --------------------------------------------------------
+    # LAN endpoints: POST /remote {"cmd": "skip"|"blacklist"|"tweak", ...}
+    # appends to the queue; the renderer polls GET /api/remote every ~2 s and
+    # dispatches: skip -> performCut, blacklist -> engine blacklist_clip,
+    # tweak -> effect_intensity slider.
+    def do_GET(self):
+        if self.path.startswith("/api/remote"):
+            queue = list(getattr(self.server, "remote_queue", []))
+            if hasattr(self.server, "remote_queue"):
+                self.server.remote_queue.clear()
+            body = json.dumps(queue).encode()
+            self._send(200, body, "application/json")
+            return
+        target = self._resolve(self.path)
+        if target is None:
+            self._send(404, b"not found", "text/plain")
+            return
+        if target == "__channel__":
+            self._send(200, self.channel_js, "application/javascript")
+            return
+        ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        if ctype.startswith("text/") or ctype in ("application/javascript",):
+            ctype += "; charset=utf-8"
+        try:
+            self._range(target, ctype)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def do_POST(self):
+        if self.path == "/remote":
+            self._remote_post()
+            return
+        self._send(405, b"nope", "text/plain")
+
+    def _remote_post(self) -> None:
+        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            data = json.loads(self.rfile.read(length) or b"{}")
+        except Exception:
+            data = {}
+        cmd = str(data.get("cmd", "")).lower()
+        if cmd not in ("skip", "blacklist", "tweak"):
+            self._send(400, b'{"ok": false}', "application/json")
+            return
+        entry: dict = {"cmd": cmd}
+        if cmd == "blacklist" and data.get("url"):
+            from .core import state
+            state.blacklist_add(str(data["url"]))
+            entry["url"] = str(data["url"])
+        if cmd == "tweak" and data.get("effect_intensity") is not None:
+            entry["effect_intensity"] = data["effect_intensity"]
+        self.server.remote_queue.append(entry)
+        log.info("remote cmd queued: %s", entry)
+        self._send(200, b'{"ok": true}', "application/json")
 
     # -- helpers -----------------------------------------------------------
     def _resolve(self, path: str) -> Path | None:
@@ -102,31 +158,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.do_GET()
 
-    def do_GET(self):
-        target = self._resolve(self.path)
-        if target is None:
-            self._send(404, b"not found", "text/plain")
-            return
-        if target == "__channel__":
-            self._send(200, self.channel_js, "application/javascript")
-            return
-        ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
-        if ctype.startswith("text/") or ctype in ("application/javascript",):
-            ctype += "; charset=utf-8"
-        try:
-            self._range(target, ctype)
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-
-    def do_POST(self):
-        self._send(405, b"nope", "text/plain")
-
 
 def start(web_dir: Path, mounts: dict[str, Path], channel_js: str, port: int) -> ThreadingHTTPServer:
     Handler.web_dir = web_dir
     Handler.mounts = mounts
     Handler.channel_js = channel_js.encode("utf-8")
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    httpd.remote_queue = []  # noqa: SLF001 - server attribute for remote cmds
     httpd.daemon_threads = True
     threading.Thread(target=httpd.serve_forever, name="http", daemon=True).start()
     log.info("renderer served at http://127.0.0.1:%d (mounts: %s)", port,

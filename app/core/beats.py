@@ -32,6 +32,10 @@ class BeatTracker:
         self.period = 0.0        # frames per beat
         self.phase = 0.0         # 0..1 within the beat
         self.locked = False
+        # section detection: rolling energy moving average + spectral flatness
+        self._energy_ema = deque(maxlen=32)
+        self._flatness = 0.5
+        self.section = "steady"
         self._miss = 0
         self._last_beat_t = 0.0
         self._since_analysis = 0
@@ -72,6 +76,28 @@ class BeatTracker:
         self._frame += 1
         self.flux_hist.append(flux)
         self.rms_hist.append(rms)
+        self._energy_ema.append(float(rms))
+
+        # section detection (8-bar scale): energy z-score vs the rolling
+        # average + spectral flatness. Chorus = sustained loud section.
+        if len(self._energy_ema) >= 12:
+            arr = np.asarray(list(self._energy_ema)[-32:], dtype=np.float32)
+            mu = float(arr[:-1].mean()) if arr.size > 1 else 0.0
+            sd = float(arr[:-1].std()) if arr.size > 9 else 0.0
+            energy_z = (float(rms) - mu) / (sd + 1e-9)
+            tail = np.asarray(list(self.rms_hist)[-16:], dtype=np.float32)
+            self._flatness = float(tail.std() / (tail.mean() + 1e-9))
+        else:
+            energy_z = 0.0
+        if energy_z > 0.8 and self._flatness < 0.55:
+            section = "chorus"
+        elif energy_z > 0.5:
+            section = "rise"
+        elif energy_z < -0.8:
+            section = "verse"
+        else:
+            section = "steady"
+        self.section = section
 
         # adaptive onset threshold from a short trailing window
         tail = list(self.flux_hist)[-24:]
@@ -147,6 +173,7 @@ class BeatTracker:
             "drop": drop,
             "phase": round(self.phase, 3),
             "onset": bool(onset),
+            "section": section,
         }
 
     def position_in_beat(self) -> float:

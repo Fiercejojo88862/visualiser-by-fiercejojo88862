@@ -222,14 +222,20 @@ class Provider:
                 break
             except urllib.error.HTTPError as exc:
                 self.last_error = f"HTTP {exc.code}"
-                if exc.code == 400 and attempt == 0:
-                    # some providers reject unfamiliar query params: retry minimal
+                if exc.code in (400, 404) and attempt == 0:
+                    # some providers reject unfamiliar query params / accept
+                    # nothing: retry with the minimal URL shape.
+                    log.info("%s search got %s, retrying minimal: %r",
+                             self.name, exc.code, query)
                     url = self.search_url(query, limit, kind, minimal=True)
                     continue
                 if exc.code == 429:
                     self.limiter._state["count"] = self.limiter.per_hour  # noqa: SLF001
                     self.limiter._write()  # noqa: SLF001
-                log.info("%s search failed: %s", self.name, exc)
+                if exc.code >= 500:
+                    log.warning("%s search server error %s", self.name, exc.code)
+                else:
+                    log.info("%s search failed: %s", self.name, exc)
                 return []
             except Exception as exc:
                 self.last_error = str(exc)

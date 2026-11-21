@@ -12,6 +12,7 @@ import time
 from .. import config
 from . import art as art_mod
 from . import lyrics as lyrics_mod
+from . import state as state_mod
 from .audio import AudioCapture, StreamRecorder
 from .beats import BeatTracker, OfflineTimeline
 from .fetch import ProviderPool
@@ -97,6 +98,15 @@ class Engine:
             self.selector.request(int(msg.get("count", 2)))
         elif cmd == "set":
             self._apply_setting(msg.get("key", ""), msg.get("value"))
+        elif cmd == "blacklist":
+            self.selector.blacklist_clip(str(msg.get("url", "")))
+        elif cmd == "unblacklist":
+            if state_mod.blacklist_remove(str(msg.get("url", ""))):
+                log.info("unblacklisted clip: %s", msg.get("url", ""))
+        elif cmd == "pin":
+            self.selector.pin(str(msg.get("url", "")))
+        elif cmd == "unpin":
+            self.selector.unpin(str(msg.get("url", "")))
         elif cmd == "status":
             self.emit({"t": "status_full", **self.status()})
         elif cmd == "seek":
@@ -137,11 +147,28 @@ class Engine:
         config.save(self.cfg)
         if key == "av_offset_ms" and self.clock:
             self.clock.av_offset_ms = int(value)
+        if key == "av_offset_profiles" and self.clock:
+            self._apply_av_offset()
         if key in ("queries_per_hour", "provider", "klipy_key", "giphy_key",
                    "content_filter", "query_cache_days", "clip_kind", "fetch_enabled"):
             self.pool = ProviderPool(self.cfg)
             self.selector.pool = self.pool
         self.emit({"t": "settings", "settings": self.cfg})
+
+    def _apply_av_offset(self) -> None:
+        """Per-device sync offset: pactl sink name -> ms from settings."""
+        if not self.clock:
+            return
+        sink = (self.capture.source or "").strip()
+        profiles = self.cfg.get("av_offset_profiles") or {}
+        ms = profiles.get(sink)
+        if ms is None and len(profiles) == 1:
+            ms = next(iter(profiles.values()))  # single-device setups
+        if ms is not None:
+            try:
+                self.clock.av_offset_ms = int(ms)
+            except (TypeError, ValueError):
+                pass
 
     # -- track handling ----------------------------------------------------
     def _on_track_change(self, track) -> None:
@@ -283,8 +310,12 @@ class Engine:
 
         pos = self.clock.now() if self.clock else 0.0
 
+        # per-device sync offsets follow the active PipeWire sink
+        self._apply_av_offset()
+
         # offline timeline takes precedence when we have one
         beat, beat_strength, drop = ev["beat"], ev["beat_strength"], ev["drop"]
+        section = ev.get("section", "")
         if self.timeline:
             # a seek/resume makes the clock jump: resync the grid cursors
             if abs(pos - self._last_pos) > 2.5:
@@ -319,6 +350,7 @@ class Engine:
             "beat_strength": beat_strength,
             "drop": bool(drop),
             "phase": ev["phase"],
+            "section": section,
             "pos": round(pos, 3),
             "duration": round(track.duration, 1),
             "playing": self.watcher.playing,
@@ -329,6 +361,8 @@ class Engine:
                       "key": track.key, "player": track.player},
             "art": self.palette,
         }
+        if self.cfg.get("section_boost", True) and section in ("chorus", "rise"):
+            msg["chorus"] = 1
         self.emit(msg)
         self._frames_sent += 1
 
@@ -371,7 +405,9 @@ class Engine:
                       "beats": len(self._timeline_beats)},
             "lyrics": {"source": self.lyrics.source, "lines": len(self.lyrics.lines)},
             "selector": self.selector.stats(),
+            "pinned": self.selector.pinned(),
             "providers": self.pool.status(),
             "cache_bytes": self.store.total_bytes(),
             "frames_sent": self._frames_sent,
+            "curation": state_mod.stats(),
         }

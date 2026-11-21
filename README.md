@@ -79,6 +79,14 @@ container when it starts.
 
 - Formats: `gif`, `webp`, `apng`, `mp4`, `webm`, `mkv`, `mov`, `png`, `jpg`, `jpeg`.
   GIFs are transcoded to VP9/webm on first use; stills are shown as static clips.
+- **Letterboxing is cropped out.** Provider memes are often padded into a square or
+  4:3 frame (a 640×480 file carrying 640×360 of picture, a 498×230 file pillarboxed
+  to 410×230). That padding lives *inside* the file, so `object-fit: cover` alone
+  still let black bars through whenever the window was not exactly 16:9. Each clip
+  is now measured with `cropdetect` at import and, when bars are found, transcoded
+  once to a cropped `*.fit.webm`; dark scenes that would collapse the detection are
+  rejected. The result covers the whole stage in any window size, windowed or
+  fullscreen. The decision is memoised in a `*.crop` marker next to the clip.
 - Up to 16 files are taken per rescan, shuffled, with never-seen files first, so a
   folder bigger than that still gets used across a session. Keep it to a few hundred
   MB — imports are copied into the clip cache and LRU-evicted at `cache_cap_gb` (6 GB).
@@ -105,7 +113,9 @@ Five layers, bottom to top:
      plus an **ultra-thin bottom spectrum** bar row;
    - expanding beat rings, and a rotating hue that follows the mood.
 3. **The clip itself** on two crossfading decks, transformed by the audio (scale,
-   rotate, saturation, contrast, hue shift), composited with `screen`.
+   rotate, saturation, contrast, hue shift), composited with `screen`. Clips are
+   cropped at import to their real content rect, so they fill the stage edge to edge
+   at whatever size the window is.
 4. **Post-processing pass** — bloom of the clip, plus RGB channel-split chromatic
    aberration on transients and drops. It samples the clip at 1/3 resolution into an
    offscreen canvas, so it is cheap; if the frame rate drops below ~42 fps it turns
@@ -149,7 +159,9 @@ Three layers, all sharing one clock:
    by keyword and mood overlap, damped by a recency penalty so the same three
    clips do not loop all night, pre-fetched during the first seconds of playback,
    cached by *query* (so repeat moods and lyrics compound into a warm cache) and
-   then cut on beats.
+   then cut on beats. A `clip_cycle_seconds` ceiling (default 3 s) guarantees a cut
+   even when beat detection never locks or the queue runs dry — it recycles clips
+   already shown rather than freezing on one — so the stage always keeps moving.
 
 **Fallback chain:** if the provider is unconfigured, rate-limited or offline, the
 renderer keeps running on its procedural layer (a canvas of band-driven blobs,
@@ -199,6 +211,7 @@ visuals sink into a slow, desaturated drift when you pause.
 | `max_queries_per_track` | search budget per song |
 | `effect_intensity` | overall reactive strength |
 | `min_beats_between_cuts` | cut cadence |
+| `clip_cycle_seconds` | hard ceiling on how long one clip can stay on screen, in seconds — cuts still land on beats, but never later than this (so a quiet passage or a dry provider queue cannot leave one clip looping the whole song); `0` = beat-locked only |
 | `av_offset_ms` | A/V offset — raise it if cuts feel late through Bluetooth |
 | `spectrum_bands` | fine spectrum resolution for the ring/bottom bars (restart) |
 | `radial_spectrum` / `bottom_spectrum` | the two spectrum overlays |

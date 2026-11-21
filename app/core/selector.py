@@ -15,6 +15,7 @@ import time
 from collections import deque
 
 from . import lyrics as lyrics_mod
+from . import state
 from .fetch import ProviderPool
 from .media import GIF_EXT, IMG_EXT, VID_EXT, MediaStore, digest
 
@@ -122,7 +123,8 @@ class Selector:
         if local:
             with self._lock:
                 self._random.shuffle(local)
-                self._queue.extend(local)
+                self._queue.extend([i for i in local
+                                    if not state.is_blacklisted(i.get("url", ""))])
             self.emit({"t": "notice", "level": "info",
                        "text": f"{len(local)} clips from local library"})
             self._push_ready()
@@ -180,6 +182,7 @@ class Selector:
         if not candidates:
             return
         mood_terms = self._mood_terms
+        pins = state.pins_for(self._track_key)
         for c in candidates:
             blob = c.blob()
             score = 0.0
@@ -194,6 +197,8 @@ class Selector:
             with self._lock:
                 if any(r in blob for r in list(self._recent)[:6]):
                     score -= 1.5
+                if any(p and (p in blob or p.split("/")[-1] in blob) for p in pins):
+                    score += 5.0  # pinned clips outrank fresh matches
             c.score = score
         candidates.sort(key=lambda c: c.score, reverse=True)
         best = [c for c in candidates if c.score > 0][:6] or candidates[:4]
@@ -206,12 +211,17 @@ class Selector:
             media = self.store.acquire(c.url, transcode_gif=True)
             if not media:
                 continue
+            if state.is_blacklisted(media["url"]) or state.is_blacklisted(c.url):
+                continue
             item = {
                 "url": media["url"], "kind": media["kind"], "title": c.title,
                 "tags": c.tags[:6], "provider": c.provider, "query": query,
             }
             with self._lock:
-                self._queue.append(item)
+                if media["url"] in pins:
+                    self._queue.appendleft(item)  # pinned: surface first on chorus/drop
+                else:
+                    self._queue.append(item)
                 self._recent.append(c.blob()[:60])
                 self._clips_sent += 1
             self._push_ready()
@@ -347,9 +357,40 @@ class Selector:
         except Exception:
             return 0
 
+    # -- curation: blacklist + pins (from renderer hotkeys / web remote) ----
+    def blacklist_clip(self, url: str) -> bool:
+        """Permanently hide a clip from this and future tracks/moods."""
+        if not url or state.is_blacklisted(url):
+            return False
+        n = state.blacklist_add(url)
+        log.info("blacklisted clip %s (%d total)", url[:70], n)
+        self.emit({"t": "notice", "level": "info",
+                   "text": f"Blacklisted clip. {n} in total."})
+        return True
+
+    def unpin(self, url: str) -> bool:
+        ok = state.pin_remove(self._track_key, url)
+        if ok:
+            log.info("unpinned clip %s from track %s", url[:60], self._track_key)
+        return ok
+
+    def pin(self, url: str) -> bool:
+        """Lock a clip to this track's timeline; selector prioritises it."""
+        if not url:
+            return False
+        ok = state.pin_add(self._track_key, url)
+        log.info("pinned clip %s to track %s", url[:60], self._track_key or "?")
+        return ok
+
+    def pinned(self) -> list[str]:
+        return sorted(state.pins_for(self._track_key))
+
     def stats(self) -> dict:
         local = self.local_count()          # filesystem I/O: keep it out of the lock
         with self._lock:
-            return {"queued": len(self._queue), "sent": self._clips_sent,
-                    "queries_used": self._queries_used,
-                    "local_files": local}
+            out = {"queued": len(self._queue), "sent": self._clips_sent,
+                   "queries_used": self._queries_used,
+                   "local_files": local,
+                   "pinned": len(state.pins_for(self._track_key)),
+                   "blacklisted": state.stats()["blacklisted"]}
+        return out
