@@ -188,13 +188,19 @@ class Selector:
         pins = state.pins_for(self._track_key)
         for c in candidates:
             blob = c.blob()
+            qblob = blob + " " + query.lower()
             score = 0.0
             for word in keywords(query):
                 if word in blob:
                     score += 2.0
             for term in mood_terms:
                 if term in blob:
-                    score += 1.0
+                    score += 2.0
+                if term in qblob:          # mood phrase in the search query itself
+                    score += 2.5
+            if mood_terms:
+                # vibe bias: partial mood matches still count for the vibe fit
+                score += sum(1.5 for t in mood_terms if any(t[:4] in b or b[:4] in t for b in blob.split())) * 0.5
             if c.kind == "video":
                 score += 0.4
             with self._lock:
