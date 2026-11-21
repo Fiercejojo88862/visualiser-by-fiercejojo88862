@@ -36,6 +36,7 @@ DEFAULTS: dict = {
     "effect_intensity": 1.0,
     "reactive_glow": True,
     "flash_on_beat": True,
+    "beat_sync": True,              # restart active clip on beats (memes on time)
     "min_beats_between_cuts": 2,
     "cut_on_drop": True,
     # Guaranteed clip rotation: never sit on one clip longer than this, even

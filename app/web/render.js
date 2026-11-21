@@ -733,6 +733,17 @@ void main() {
   /* ---------- events ---------------------------------------------------- */
   function onBeat(strength) {
     state.beats += 1;
+    // Beat-sync: snap the active clip to the beat grid so its loop
+    // re-aligns with the music (memes play on time now).
+    if (strength >= 0.4 && state.settings.beat_sync !== false) {
+      const node = activeMediaNode();
+      if (node && node.tagName === "VIDEO") {
+        try {
+          if (node.currentTime > 0.1) { node.currentTime = 0; }
+          if (typeof node.play === "function") node.play().catch(() => {});
+        } catch (e) { /* not seekable / ended */ }
+      }
+    }
     const s = Number(state.settings.effect_intensity ?? 1);
     state.flash = Math.max(state.flash, clamp(0.1 + strength * 0.28 * s, 0, 0.55));
     state.pulse = Math.max(state.pulse, strength);
